@@ -2,6 +2,7 @@
 
 [![lint](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml)
 [![release](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml)
+[![trivy scan](https://img.shields.io/github/actions/workflow/status/ansjindal/nemo-guardrails-helm/security-scan.yml?branch=main&label=trivy%20scan)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/security-scan.yml)
 [![chart](https://img.shields.io/github/v/release/ansjindal/nemo-guardrails-helm?label=chart&sort=semver&color=0f1689&logo=helm&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fcharts%2Fnemo-guardrails)
 [![image](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fansjindal%2Fnemo-guardrails-helm%2Fmain%2FChart.yaml&query=%24.appVersion&label=image&color=2496ed&logo=docker&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fnemo-guardrails)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -664,9 +665,11 @@ Non-GHCR registries also need their own login step and credentials in repository
 | `release` | every release, before anything is pushed | Image CVEs (OS and Python packages), SBOM; chart misconfigurations; kind install + `helm test` with the new image | Fixable HIGH/CRITICAL CVE; HIGH/CRITICAL misconfiguration; failed install or test |
 | `security-scan` | daily, and on demand | CVEs in every image the latest release deploys (server and `helm test` images) | Fixable HIGH/CRITICAL CVE |
 
-- **Where findings appear:** Security → Code scanning, categorised by `image`,
-  `image:<ref>`, and `chart-misconfig`. Image uploads are limited to HIGH/CRITICAL to keep
-  the tab actionable; the full report and a CycloneDX SBOM are attached to every release.
+- **Where findings appear:** the *trivy scan* badge at the top shows whether the published
+  images currently pass the gate. Details go to Security → Code scanning, categorised by
+  `image`, `image:<ref>`, and `chart-misconfig`; GitHub shows that tab only to users with
+  write access. Image uploads are limited to HIGH/CRITICAL to keep the tab actionable.
+  Everyone can download the full Trivy report and a CycloneDX SBOM from each release.
 - **Why "fixable" only:** most Debian findings in the image have no fixed package yet
   (many are `linux-libc-dev` kernel headers that the upstream Dockerfile's build toolchain
   leaves in the runtime image and that a container never uses). Gating on them would
