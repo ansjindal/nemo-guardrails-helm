@@ -5,13 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.3
 
@@ -37,3 +42,74 @@ jobs:
           tar xf kubeconform.tar.gz kubeconform
           helm template ci . --set ingress.enabled=true --set autoscaling.enabled=true \
             | ./kubeconform -strict -summary -ignore-missing-schemas
+
+  chart-security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0 # see "Security scanning" in the README before bumping
+          cache: true
+
+      - name: Scan the rendered chart for misconfigurations
+        run: |
+          trivy config . \
+            --ignorefile .trivyignore.yaml \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
+      - name: Export all findings as SARIF
+        if: ${{ !cancelled() }}
+        run: |
+          trivy config . \
+            --ignorefile .trivyignore.yaml \
+            --format sarif --output trivy-chart.sarif
+
+      - name: Upload to GitHub code scanning
+        if: ${{ !cancelled() && hashFiles('trivy-chart.sarif') != '' && github.event.pull_request.head.repo.fork != true }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-chart.sarif
+          category: chart-misconfig
+
+  install:
+    # Installs the chart into a throwaway cluster with the published image for
+    # appVersion and runs `helm test`. No provider key is needed: the test pod
+    # only hits /v1/health and /v1/rails/configs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+
+      - name: Install the chart under the restricted Pod Security Standard
+        run: |
+          kubectl create namespace guardrails
+          kubectl label namespace guardrails pod-security.kubernetes.io/enforce=restricted
+          helm install ci . --namespace guardrails --wait --timeout 10m
+
+      # No --logs: the hook policy deletes the pod on success, and fetching
+      # logs from the deleted pod exits non-zero.
+      - name: helm test
+        run: helm test ci --namespace guardrails
+
+      - name: Dump diagnostics
+        if: ${{ failure() }}
+        run: |
+          kubectl get all -n guardrails -o wide
+          kubectl describe pods -n guardrails
+          kubectl logs -n guardrails -l app.kubernetes.io/instance=ci --all-containers --tail=200
+          kubectl get events -n guardrails --sort-by=.lastTimestamp

@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; Dependabot bumps the SHA and its
+  # version comment together, so pins stay current without floating tags.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

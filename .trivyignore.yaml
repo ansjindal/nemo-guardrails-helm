@@ -1,0 +1,26 @@
+# Accepted findings for the Trivy gates (see "Security scanning" in the README).
+#
+# Only the pass/fail gates read this file. SARIF uploads and the release scan
+# report ignore it, so accepted findings stay visible in code scanning.
+# Every CVE entry needs a statement and an expiry, so it is re-reviewed rather
+# than silently accepted forever.
+
+vulnerabilities:
+  # anyio 4.14.1 is pinned by the upstream uv.lock at v0.24.1. Bump tracked in
+  # https://github.com/NVIDIA-NeMo/Guardrails/pull/2394; drop these entries
+  # once a release ships anyio >= 4.14.2.
+  - id: CVE-2026-63374
+    purls:
+      - pkg:pypi/anyio@4.14.1
+    statement: >-
+      IDNA 2003 hostname validation in connect_tcp/TLSStream.wrap. Only
+      reachable for non-ASCII provider hostnames on a hijacked connection;
+      configured endpoints are ASCII.
+    expired_at: 2026-10-31
+  - id: CVE-2026-63349
+    purls:
+      - pkg:pypi/anyio@4.14.1
+    statement: >-
+      extra_groups ignored by anyio.open_process. NeMo Guardrails does not
+      import anyio itself or spawn processes through it.
+    expired_at: 2026-10-31
