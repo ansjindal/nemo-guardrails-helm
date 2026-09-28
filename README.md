@@ -15,7 +15,9 @@ managed declaratively instead of being baked into an image.
 - [Building the image](#building-the-image)
 - [Quick start](#quick-start)
 - [Guardrails configurations](#guardrails-configurations)
+- [Adding a model](#adding-a-model)
 - [Provider API keys](#provider-api-keys)
+- [Tool calling](#tool-calling)
 - [Exposing the API](#exposing-the-api)
 - [Values reference](#values-reference)
 - [Verifying a deployment](#verifying-a-deployment)
@@ -151,6 +153,114 @@ guardrailsConfigs:
 > helm install ... --set guardrailsConfigs.demo=null
 > ```
 
+## Adding a model
+
+Models are declared **inside a guardrails configuration**, not as a chart-level value.
+Every configuration needs at least one entry of `type: main` — the model that answers
+requests routed to that `config_id`.
+
+```yaml
+guardrailsConfigs:
+  my-config:
+    config.yml: |
+      models:
+        - type: main
+          engine: openai
+          model: gpt-4o-mini
+          parameters:
+            base_url: https://api.openai.com/v1
+```
+
+| Field | Purpose |
+|---|---|
+| `type` | `main` for the primary model; a named type (e.g. `content_safety`) for a model a rail calls |
+| `engine` | Provider integration — selects the client and its default key variable |
+| `model` | Model identifier as the provider expects it |
+| `parameters` | Passed to the client constructor (`base_url`, `temperature`, `max_tokens`, …) |
+
+> [!IMPORTANT]
+> **No API key goes in `config.yml`.** The key is supplied through the environment from a
+> Secret — see [Provider API keys](#provider-api-keys). Anything you put under
+> `guardrailsConfigs` is rendered into a ConfigMap, which is *not* a secret store.
+
+### Common engines
+
+```yaml
+# OpenAI, or any OpenAI-compatible endpoint          -> OPENAI_API_KEY
+- type: main
+  engine: openai
+  model: gpt-4o-mini
+  parameters:
+    base_url: https://api.openai.com/v1
+
+# NVIDIA NIM, hosted or self-hosted                  -> NVIDIA_API_KEY
+- type: main
+  engine: nim
+  model: meta/llama-3.3-70b-instruct
+  parameters:
+    base_url: https://integrate.api.nvidia.com/v1
+
+# A NIM running in the same cluster                  -> NVIDIA_API_KEY (often unused)
+- type: main
+  engine: nim
+  model: meta/llama-3.3-70b-instruct
+  parameters:
+    base_url: http://my-nim.nim.svc.cluster.local:8000/v1
+```
+
+### Using a separate model for a rail
+
+Rails can call a dedicated model. Give it a named `type` and reference it with `$model=`:
+
+```yaml
+guardrailsConfigs:
+  content-safety:
+    config.yml: |
+      models:
+        - type: main
+          engine: nim
+          model: meta/llama-3.3-70b-instruct
+          parameters:
+            base_url: http://my-nim.nim.svc.cluster.local:8000/v1
+
+        - type: content_safety
+          engine: nim
+          model: nvidia/llama-3.1-nemoguard-8b-content-safety
+          parameters:
+            base_url: http://nemoguard.nim.svc.cluster.local:8000/v1
+
+      rails:
+        input:
+          flows:
+            - content safety check input $model=content_safety
+        output:
+          flows:
+            - content safety check output $model=content_safety
+```
+
+### Per-model keys
+
+When models need different credentials, name the variable per model with
+`api_key_env_var` and put both keys in the same Secret:
+
+```yaml
+models:
+  - type: main
+    engine: openai
+    model: gpt-4o-mini
+    api_key_env_var: PRIMARY_MODEL_KEY
+  - type: content_safety
+    engine: nim
+    model: nvidia/llama-3.1-nemoguard-8b-content-safety
+    api_key_env_var: SAFETY_MODEL_KEY
+```
+
+```yaml
+modelApiKeys:
+  PRIMARY_MODEL_KEY: sk-...
+  SAFETY_MODEL_KEY: nvapi-...
+```
+
 ## Provider API keys
 
 No credentials are sent to the guardrails server by clients. The server reads a key from
@@ -181,6 +291,87 @@ kubectl create secret generic model-keys \
 ```yaml
 existingSecret: model-keys
 ```
+
+## Tool calling
+
+The server accepts the OpenAI `tools`, `tool_choice`, and `parallel_tool_calls`
+parameters, but only under two conditions:
+
+1. the configuration sets **`passthrough: true`**, and
+2. the request is **non-streaming** (`"stream": false`).
+
+Anything else is rejected with `422` — the parameters are never silently dropped:
+
+```json
+{"error":{"message":"The 'tools', 'tool_choice', and 'parallel_tool_calls' parameters are only supported for non-streaming requests when the guardrails configuration has 'passthrough: true'.","type":"invalid_request_error"}}
+```
+
+### Configuration
+
+```yaml
+guardrailsConfigs:
+  tool-calling:
+    config.yml: |
+      models:
+        - type: main
+          engine: openai
+          model: <tool-calling-capable-model>
+          parameters:
+            base_url: <your-openai-compatible-model-api>/v1
+      passthrough: true
+```
+
+### Request
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<tool-calling-capable-model>",
+    "messages": [{"role": "user", "content": "What is the weather in San Francisco? Use the get_weather tool."}],
+    "tools": [{"type": "function", "function": {
+        "name": "get_weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}],
+    "tool_choice": "auto",
+    "guardrails": {"config_id": "tool-calling"}
+  }'
+```
+
+Tool calls are returned in the standard OpenAI shape, with `finish_reason: "tool_calls"`:
+
+```json
+{
+  "choices": [{
+    "finish_reason": "tool_calls",
+    "message": {
+      "role": "assistant",
+      "tool_calls": [{
+        "id": "call-3b96d9d1-a04e-43db-800e-4206998d086d",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\": \"San Francisco\"}"}
+      }]
+    }
+  }],
+  "guardrails": {"config_id": "tool-calling"}
+}
+```
+
+Your application executes the tool and sends the result back as a `tool` message on the
+next request, as in the standard OpenAI function-calling loop.
+
+> [!WARNING]
+> `passthrough: true` sends the prompt to the model unaltered, which **bypasses dialog
+> rails**. In the current release you get tool calling *or* the full rails pipeline on a
+> given configuration, not both. A common pattern is two configurations — a passthrough
+> one for tool-calling turns, and a rails-enabled one for conversational turns — with the
+> application choosing `config_id` per request.
+
+### Known limitations
+
+| Limitation | Upstream |
+|---|---|
+| Streaming (`stream: true`) with `tools` returns 422 | [NVIDIA-NeMo/Guardrails#2056](https://github.com/NVIDIA-NeMo/Guardrails/issues/2056) |
+| Non-passthrough configurations cannot use `tools` | [NVIDIA-NeMo/Guardrails#2057](https://github.com/NVIDIA-NeMo/Guardrails/issues/2057) |
 
 ## Exposing the API
 
