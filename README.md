@@ -1,4 +1,4 @@
-# nemo-guardrails
+# nemo-guardrails-helm
 
 A production-oriented Helm chart for the [NVIDIA NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails) API server.
 
