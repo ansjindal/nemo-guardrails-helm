@@ -1,9 +1,12 @@
-# Accepted findings for the Trivy gates (see "Security scanning" in the README).
+# Accepted findings for Trivy (see "Security scanning" in the README).
 #
-# Only the pass/fail gates read this file. SARIF uploads and the release scan
-# report ignore it, so accepted findings stay visible in code scanning.
-# Every CVE entry needs a statement and an expiry, so it is re-reviewed rather
-# than silently accepted forever.
+# vulnerabilities: accepted risk. Only the pass/fail gates read these entries;
+# code scanning and the release report still show the finding. Every entry
+# needs a statement and an expiry, so it is re-reviewed rather than silently
+# accepted forever.
+#
+# misconfigurations: false positives for this chart. These are dropped from
+# code scanning too, since there is nothing to act on.
 
 vulnerabilities:
   # anyio 4.14.1 is pinned by the upstream uv.lock at v0.24.1. Bump tracked in
@@ -24,3 +27,14 @@ vulnerabilities:
       extra_groups ignored by anyio.open_process. NeMo Guardrails does not
       import anyio itself or spawn processes through it.
     expired_at: 2026-10-31
+
+misconfigurations:
+  - id: KSV-0125
+    statement: >-
+      "Image from an untrusted registry": ghcr.io is not on Trivy's default
+      allowlist, but it is where this repository publishes the image. Which
+      registries a cluster trusts is its admission policy's decision.
+  - id: KSV-0110
+    statement: >-
+      "Uses the default namespace": Trivy renders the chart without a
+      namespace. Helm installs into the release namespace given at install time.

@@ -1,7 +1,7 @@
 name: security-scan
 
 # Scans the container images the chart deploys for CVEs with Trivy, and uploads
-# HIGH/CRITICAL findings to Security → Code scanning.
+# fixable HIGH/CRITICAL findings to Security → Code scanning.
 #
 # - Daily, on demand, and after each release: the images the latest published
 #   release deploys. CVEs keep being disclosed after release, so a clean scan
@@ -83,10 +83,13 @@ jobs:
           IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          trivy image --scanners vuln --timeout 20m \
-            --format json --output trivy.json "$IMAGE"
-          trivy convert --format sarif --severity HIGH,CRITICAL --output trivy.sarif trivy.json
-          trivy convert --format table --severity HIGH,CRITICAL trivy.json
+          trivy image --scanners vuln --timeout 20m --severity HIGH,CRITICAL "$IMAGE"
+          # Code scanning only gets findings with a fix available: the rest
+          # cannot be acted on, and an alert appears as soon as a fix ships.
+          # The second pass reuses the layer cache, so it is cheap.
+          trivy image --scanners vuln --timeout 20m --skip-db-update \
+            --ignore-unfixed --severity HIGH,CRITICAL \
+            --format sarif --output trivy.sarif "$IMAGE"
 
       - name: Upload to GitHub code scanning
         if: ${{ !cancelled() && hashFiles('trivy.sarif') != '' && github.event.pull_request.head.repo.fork != true }}
