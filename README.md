@@ -1,5 +1,12 @@
 # nemo-guardrails-helm
 
+[![lint](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml)
+[![release](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml)
+[![chart](https://img.shields.io/github/v/release/ansjindal/nemo-guardrails-helm?label=chart&sort=semver&color=0f1689&logo=helm&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fcharts%2Fnemo-guardrails)
+[![image](https://img.shields.io/github/v/release/ansjindal/nemo-guardrails-helm?label=image&sort=semver&color=2496ed&logo=docker&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fnemo-guardrails)
+[![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+[![unofficial](https://img.shields.io/badge/NVIDIA-unofficial-orange.svg)](#container-image)
+
 A production-oriented Helm chart for the [NVIDIA NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails) API server.
 
 It deploys the guardrails server, renders each guardrails configuration into its own
