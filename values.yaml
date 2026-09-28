@@ -1,0 +1,163 @@
+# Default values for nemo-guardrails.
+
+replicaCount: 1
+
+image:
+  repository: nemoguardrails
+  tag: "0.24.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+## Server arguments
+server:
+  # Port the server listens on (also the container & service target port).
+  port: 8000
+  # Mount path inside the container for guardrails configurations.
+  configPath: /config
+  # Disable the bundled Chainlit chat UI. Recommended for API-only deployments.
+  disableChatUi: true
+  # Emit verbose logs, including rendered prompts. Keep false in production.
+  verbose: false
+  # Reload a configuration when its files change on disk.
+  autoReload: false
+  # Configuration used when a request omits guardrails.config_id.
+  defaultConfigId: ""
+  # Extra CLI flags appended verbatim to `nemoguardrails server`.
+  extraArgs: []
+
+## Guardrails configurations.
+## Each key becomes a config_id and is rendered into its own ConfigMap,
+## mounted at <server.configPath>/<key>/. Files map to keys within that config.
+guardrailsConfigs:
+  demo:
+    config.yml: |
+      models:
+        - type: main
+          engine: openai
+          model: gpt-4o-mini
+          parameters:
+            base_url: https://api.openai.com/v1
+
+      rails:
+        input:
+          flows:
+            - self check input
+
+      prompts:
+        - task: self_check_input
+          content: |
+            Your task is to check if the user message below complies with policy.
+
+            Policy for the user messages:
+            - should not contain harmful data
+            - should not ask the bot to impersonate someone
+            - should not contain explicit content
+
+            User message: "{{ user_input }}"
+
+            Question: Should the user message be blocked (Yes or No)?
+            Answer:
+
+## API keys for upstream model providers, rendered into a Secret and injected
+## as environment variables. Leave empty and set `existingSecret` to manage
+## credentials outside this chart (recommended for production).
+modelApiKeys: {}
+  # OPENAI_API_KEY: ""
+  # NVIDIA_API_KEY: ""
+  # AZURE_OPENAI_API_KEY: ""
+
+## Name of a pre-existing Secret holding the provider API keys.
+## Takes precedence over `modelApiKeys` when set.
+existingSecret: ""
+
+## Additional plain environment variables.
+extraEnv: []
+  # - name: LOG_LEVEL
+  #   value: debug
+
+service:
+  type: ClusterIP
+  port: 8000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: guardrails.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: ""
+
+## The upstream image installs its Python environment and embedding-model cache
+## as root. Running as a different UID requires rebuilding the image, so the
+## defaults below stay permissive; harden them if your image supports it.
+podSecurityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+## Probes target /v1/health, the same endpoint used by the image HEALTHCHECK.
+## startupProbe absorbs the model/embedding load on first boot.
+probes:
+  startup:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 30
+  liveness:
+    enabled: true
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Spread replicas across nodes when replicaCount > 1.
+topologySpreadConstraints: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+## Extra volumes/mounts, e.g. for custom actions or knowledge bases.
+extraVolumes: []
+extraVolumeMounts: []

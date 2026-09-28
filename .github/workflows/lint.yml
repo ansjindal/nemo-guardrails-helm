@@ -1,0 +1,39 @@
+name: lint-and-template
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint
+        run: helm lint .
+
+      - name: Render with default values
+        run: helm template ci . > /dev/null
+
+      - name: Render with all optional resources enabled
+        run: |
+          helm template ci . \
+            --set ingress.enabled=true \
+            --set autoscaling.enabled=true \
+            --set podDisruptionBudget.enabled=true \
+            --set modelApiKeys.OPENAI_API_KEY=dummy \
+            > /dev/null
+
+      - name: Validate manifests against the Kubernetes schema
+        run: |
+          curl -sSLo kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz kubeconform
+          helm template ci . --set ingress.enabled=true --set autoscaling.enabled=true \
+            | ./kubeconform -strict -summary -ignore-missing-schemas

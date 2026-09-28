@@ -1,0 +1,21 @@
+apiVersion: v2
+name: nemo-guardrails
+description: NVIDIA NeMo Guardrails API server — programmable guardrails for LLM applications
+type: application
+version: 0.1.0
+appVersion: "0.24.1"
+home: https://github.com/ansjindal/nemo-guardrails-helm
+sources:
+  - https://github.com/ansjindal/nemo-guardrails-helm
+  - https://github.com/NVIDIA-NeMo/Guardrails
+keywords:
+  - nemo
+  - guardrails
+  - llm
+  - ai-safety
+  - nvidia
+maintainers:
+  - name: ansjindal
+    url: https://github.com/ansjindal
+annotations:
+  category: AI

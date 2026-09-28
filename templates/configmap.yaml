@@ -1,0 +1,12 @@
+{{- range $id, $files := .Values.guardrailsConfigs }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nemo-guardrails.configMapName" (dict "root" $ "id" $id) }}
+  labels:
+    {{- include "nemo-guardrails.labels" $ | nindent 4 }}
+    nemo-guardrails.io/config-id: {{ $id | quote }}
+data:
+{{ toYaml $files | indent 2 }}
+{{- end }}

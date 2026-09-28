@@ -1,0 +1,51 @@
+NeMo Guardrails has been deployed as {{ include "nemo-guardrails.fullname" . }}.
+
+Configurations loaded ({{ len .Values.guardrailsConfigs }}):
+{{- range $id, $files := .Values.guardrailsConfigs }}
+  - {{ $id }}
+{{- end }}
+
+1. Reach the API:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get svc {{ include "nemo-guardrails.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}")
+  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else }}
+  kubectl port-forward svc/{{ include "nemo-guardrails.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+{{- end }}
+
+2. Verify it is serving:
+
+  curl http://localhost:{{ .Values.service.port }}/v1/health
+  curl http://localhost:{{ .Values.service.port }}/v1/rails/configs
+
+3. Send a guarded chat completion:
+
+  curl -X POST http://localhost:{{ .Values.service.port }}/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "model": "<model-id>",
+      "messages": [{"role": "user", "content": "Hello!"}],
+      "guardrails": {"config_id": "{{ first (keys .Values.guardrailsConfigs) }}"}
+    }'
+
+4. Run the bundled tests:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if and (not .Values.modelApiKeys) (not .Values.existingSecret) }}
+
+WARNING: no provider API key configured. Requests that reach an upstream model
+will fail until you set `modelApiKeys` or point `existingSecret` at a Secret.
+{{- end }}
+{{- if not .Values.server.disableChatUi }}
+
+NOTE: the Chainlit chat UI is enabled and served at /chat. Set
+`server.disableChatUi=true` for API-only deployments.
+{{- end }}
