@@ -12,7 +12,7 @@ managed declaratively instead of being baked into an image.
 
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
-- [Building the image](#building-the-image)
+- [Container image](#container-image)
 - [Quick start](#quick-start)
 - [Guardrails configurations](#guardrails-configurations)
 - [Adding a model](#adding-a-model)
@@ -24,6 +24,7 @@ managed declaratively instead of being baked into an image.
 - [Upgrading configurations](#upgrading-configurations)
 - [Troubleshooting](#troubleshooting)
 - [Uninstalling](#uninstalling)
+- [Releasing](#releasing)
 
 ---
 
@@ -47,15 +48,37 @@ managed declaratively instead of being baked into an image.
 - Helm 3.8+
 - A container image of the NeMo Guardrails server reachable from your cluster
 
-## Building the image
+## Container image
+
+This repository builds and publishes the image itself:
+
+```
+ghcr.io/ansjindal/nemo-guardrails:<version>
+```
+
+The tag always matches the upstream NeMo Guardrails version and the chart version, so
+`helm install --version 0.24.1` and image tag `0.24.1` always correspond.
 
 > [!IMPORTANT]
-> There is no public registry image for the **NeMo Guardrails library server**. The
-> image published on NGC (`nvcr.io/nvidia/nemo-microservices/guardrails`) is the
-> separate **NeMo Guardrails microservice**, which exposes a different API surface
-> (`/v1/guardrail/...` plus configuration CRUD). This chart targets the open-source
-> library server (`/v1/chat/completions`, `/v1/checks`, `/v1/rails/configs`), so you
-> build and push that image yourself.
+> **This is an unofficial build.** NVIDIA does not publish a container image for the
+> open-source NeMo Guardrails **library** server. The image on NGC
+> (`nvcr.io/nvidia/nemo-microservices/guardrails`) is the separate **NeMo Guardrails
+> microservice**, which exposes a different API surface (`/v1/guardrail/...` plus
+> configuration CRUD). This chart targets the library server
+> (`/v1/chat/completions`, `/v1/checks`, `/v1/rails/configs`), so this repo compiles that
+> image from upstream source at the tagged release. It is not supported by NVIDIA.
+>
+> Provenance is recorded in the image labels:
+> ```
+> org.opencontainers.image.source  = https://github.com/NVIDIA-NeMo/Guardrails
+> org.opencontainers.image.url     = https://github.com/ansjindal/nemo-guardrails-helm
+> org.opencontainers.image.vendor  = Unofficial community build
+> org.opencontainers.image.licenses = Apache-2.0
+> ```
+
+### Building it yourself
+
+If you would rather own the artifact, build from upstream and point the chart at it:
 
 ```bash
 git clone --depth 1 --branch v0.24.1 https://github.com/NVIDIA-NeMo/Guardrails.git
@@ -63,8 +86,6 @@ cd Guardrails
 docker build -t <your-registry>/nemoguardrails:0.24.1 .
 docker push <your-registry>/nemoguardrails:0.24.1
 ```
-
-Then point the chart at it:
 
 ```yaml
 image:
@@ -74,10 +95,21 @@ image:
 
 ## Quick start
 
+From the published chart:
+
 ```bash
-helm install guardrails ./nemo-guardrails \
+helm install guardrails \
+  oci://ghcr.io/ansjindal/charts/nemo-guardrails --version 0.24.1 \
   --namespace guardrails --create-namespace \
-  --set image.repository=<your-registry>/nemoguardrails \
+  --set modelApiKeys.OPENAI_API_KEY=sk-... \
+  --wait
+```
+
+Or from a checkout of this repo:
+
+```bash
+helm install guardrails . \
+  --namespace guardrails --create-namespace \
   --set modelApiKeys.OPENAI_API_KEY=sk-... \
   --wait
 ```
@@ -403,8 +435,8 @@ connection open for the duration of the generation.
 | Key | Default | Description |
 |---|---|---|
 | `replicaCount` | `1` | Replicas when autoscaling is disabled |
-| `image.repository` | `nemoguardrails` | Image repository |
-| `image.tag` | `"0.24.1"` | Image tag; falls back to `.Chart.AppVersion` |
+| `image.repository` | `ghcr.io/ansjindal/nemo-guardrails` | Image repository |
+| `image.tag` | `""` | Image tag; empty resolves to `.Chart.AppVersion` |
 | `image.pullPolicy` | `IfNotPresent` | Pull policy |
 | `imagePullSecrets` | `[]` | Registry credentials |
 | `resources` | 250m/512Mi → 2/2Gi | Requests and limits |
@@ -525,6 +557,55 @@ helm uninstall <release> -n <namespace>
 
 ConfigMaps and the chart-managed Secret are removed with the release. A Secret referenced
 via `existingSecret` is left in place.
+
+## Releasing
+
+`.github/workflows/release.yml` builds the image and publishes the chart in one run, so a
+release is a single version number applied consistently:
+
+```
+chart version == appVersion == image tag == upstream Guardrails version
+```
+
+Trigger by pushing a tag:
+
+```bash
+git tag v0.24.1 && git push origin v0.24.1
+```
+
+Or run **Actions → release → Run workflow**, supplying the upstream version. Leave
+`publish` unchecked for a dry run that builds and packages without pushing anything.
+
+The run does three things in order:
+
+1. **resolve** — derives the version, validates it as SemVer.
+2. **image** — checks out `NVIDIA-NeMo/Guardrails` at `v<version>`, builds the image with
+   layer caching, and pushes `:<version>` and `:latest` to GHCR.
+3. **chart** — lints, packages with `--version`/`--app-version` set to the release
+   version, asserts the rendered Deployment references the exact image tag just
+   published, pushes the chart to `oci://ghcr.io/<owner>/charts`, and creates a GitHub
+   release with the `.tgz` attached.
+
+Because `image.tag` defaults to empty, the chart resolves its image from `appVersion` —
+the two cannot drift.
+
+> [!NOTE]
+> GHCR packages are **private** on first publish. After the initial release, set both the
+> image and chart packages to public under the repository's package settings, otherwise
+> `helm install` from the OCI URL will fail with an authorization error.
+
+### Targeting a different registry
+
+Override the `env` block at the top of the workflow:
+
+```yaml
+env:
+  REGISTRY: nvcr.io
+  IMAGE_NAMESPACE: your-org
+  IMAGE_NAME: nemo-guardrails
+```
+
+Non-GHCR registries also need their own login step and credentials in repository secrets.
 
 ## License
 

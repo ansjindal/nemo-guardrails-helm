@@ -3,8 +3,12 @@
 replicaCount: 1
 
 image:
-  repository: nemoguardrails
-  tag: "0.24.1"
+  # Unofficial build of the upstream NeMo Guardrails library server, published
+  # by this repository. See README "Container image" for provenance.
+  repository: ghcr.io/ansjindal/nemo-guardrails
+  # Empty means "use .Chart.AppVersion", which the release pipeline keeps equal
+  # to the chart version and the image tag. Override to pin a specific tag.
+  tag: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
