@@ -51,10 +51,18 @@ spec:
             - secretRef:
                 name: {{ include "nemo-guardrails.secretName" . }}
           {{- end }}
-          {{- with .Values.extraEnv }}
           env:
+            - name: HOME
+              value: {{ .Values.scratch.mountPath | quote }}
+            - name: TMPDIR
+              value: {{ .Values.scratch.mountPath | quote }}
+            - name: CHAINLIT_APP_ROOT
+              value: {{ .Values.scratch.mountPath | quote }}
+            - name: FASTEMBED_CACHE_PATH
+              value: {{ .Values.embeddingModelCache | quote }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- if .Values.probes.startup.enabled }}
           startupProbe:
             httpGet:
@@ -91,6 +99,13 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            - name: scratch
+              mountPath: {{ .Values.scratch.mountPath }}
+            # Masks the example bots the upstream image bakes into /config;
+            # they would otherwise be served, with this pod's provider keys,
+            # alongside the configurations below.
+            - name: configs
+              mountPath: {{ .Values.server.configPath }}
             {{- range $id, $files := .Values.guardrailsConfigs }}
             - name: {{ printf "config-%s" $id | trunc 63 | trimSuffix "-" }}
               mountPath: {{ printf "%s/%s" $.Values.server.configPath $id }}
@@ -100,6 +115,16 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        - name: scratch
+          {{- if .Values.scratch.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.scratch.sizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: configs
+          emptyDir:
+            sizeLimit: 1Mi
         {{- range $id, $files := .Values.guardrailsConfigs }}
         - name: {{ printf "config-%s" $id | trunc 63 | trimSuffix "-" }}
           configMap:
