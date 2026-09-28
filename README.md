@@ -669,15 +669,19 @@ Non-GHCR registries also need their own login step and credentials in repository
 - **Where findings appear:** the *trivy scan* badge at the top shows whether the published
   images currently pass the gate. Details go to Security → Code scanning, with one
   category per image (`image:<name>`, no tag, so it carries over between releases) plus
-  `chart-misconfig`; GitHub shows that tab only to users with write access. Image uploads are limited to HIGH/CRITICAL to keep the tab actionable.
-  Everyone can download the full Trivy report and a CycloneDX SBOM from each release.
+  `chart-misconfig`; GitHub shows that tab only to users with write access. Image uploads
+  are limited to *fixable* HIGH/CRITICAL findings, so every alert there can be acted on.
+  Everyone can download the full Trivy report and a CycloneDX SBOM from each release, and
+  each scan's run log lists all HIGH/CRITICAL findings, fixable or not.
 - **Why "fixable" only:** most Debian findings in the image have no fixed package yet
   (many are `linux-libc-dev` kernel headers that the upstream Dockerfile's build toolchain
-  leaves in the runtime image and that a container never uses). Gating on them would
-  block every release without offering a remedy; they stay visible in the report.
-- **Accepting a finding:** add it to [`.trivyignore.yaml`](.trivyignore.yaml) with a
-  `statement` explaining why and an `expired_at` date. Only the gates read that file;
-  reports still show the finding, and it fails the gate again once it expires.
+  leaves in the runtime image and that a container never uses). Gating or alerting on them
+  offers no remedy; they appear in code scanning as soon as a fix ships.
+- **Accepting a finding:** add it to [`.trivyignore.yaml`](.trivyignore.yaml).
+  - Vulnerabilities need a `statement` and an `expired_at` date. Only the gates read these
+    entries: code scanning and the report still show the finding, and it fails the gate
+    again once the entry expires.
+  - Misconfigurations are for false positives. They are dropped from code scanning too.
 
 Run the same checks locally:
 
