@@ -2,7 +2,13 @@ apiVersion: v2
 name: nemo-guardrails
 description: NVIDIA NeMo Guardrails API server — programmable guardrails for LLM applications
 type: application
-version: 0.1.0
+# The chart's own SemVer: bump it for any change to the chart. Releases are cut
+# by pushing the matching tag (v<version>); a published version is never
+# overwritten. Versions up to 0.24.1 followed the upstream version, so this
+# must stay above 0.24.1 for Helm to treat it as the newest chart.
+version: 1.0.0
+# Upstream NeMo Guardrails version the release builds, which is also the image
+# tag the chart deploys by default.
 appVersion: "0.24.1"
 home: https://github.com/ansjindal/nemo-guardrails-helm
 sources:

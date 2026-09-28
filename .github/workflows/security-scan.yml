@@ -24,23 +24,20 @@ jobs:
     outputs:
       images: ${{ steps.images.outputs.images }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.3
 
-      # Chart.yaml is not bumped on release, so ask GitHub which version is
-      # published and render the chart at that tag, test hook included.
+      # Renders the chart as published at the latest release, not the working
+      # tree: main can already reference newer images than users have deployed.
       - id: images
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName | ltrimstr("v")')"
-          IMAGES="$(helm template scan . --set image.tag="$VERSION" \
+          CHART_VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName | ltrimstr("v")')"
+          REPO_PATH="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          IMAGES="$(helm template scan "oci://ghcr.io/$REPO_PATH/charts/nemo-guardrails" --version "$CHART_VERSION" \
             | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' \
             | sort -u | jq -Rcn '[inputs]')"
           echo "Scanning: $IMAGES"
