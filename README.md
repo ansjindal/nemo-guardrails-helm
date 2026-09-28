@@ -53,7 +53,7 @@ managed declaratively instead of being baked into an image.
 This repository builds and publishes the image itself:
 
 ```
-ghcr.io/ansjindal/nemo-guardrails:<version>
+ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
 ```
 
 The tag always matches the upstream NeMo Guardrails version and the chart version, so
@@ -70,8 +70,8 @@ The tag always matches the upstream NeMo Guardrails version and the chart versio
 >
 > Provenance is recorded in the image labels:
 > ```
-> org.opencontainers.image.source  = https://github.com/NVIDIA-NeMo/Guardrails
-> org.opencontainers.image.url     = https://github.com/ansjindal/nemo-guardrails-helm
+> org.opencontainers.image.source  = https://github.com/ansjindal/nemo-guardrails-helm
+> org.opencontainers.image.url     = https://github.com/NVIDIA-NeMo/Guardrails
 > org.opencontainers.image.vendor  = Unofficial community build
 > org.opencontainers.image.licenses = Apache-2.0
 > ```
@@ -99,7 +99,7 @@ From the published chart:
 
 ```bash
 helm install guardrails \
-  oci://ghcr.io/ansjindal/charts/nemo-guardrails --version 0.24.1 \
+  oci://ghcr.io/ansjindal/nemo-guardrails-helm/charts/nemo-guardrails --version 0.24.1 \
   --namespace guardrails --create-namespace \
   --set modelApiKeys.OPENAI_API_KEY=sk-... \
   --wait
@@ -435,7 +435,7 @@ connection open for the duration of the generation.
 | Key | Default | Description |
 |---|---|---|
 | `replicaCount` | `1` | Replicas when autoscaling is disabled |
-| `image.repository` | `ghcr.io/ansjindal/nemo-guardrails` | Image repository |
+| `image.repository` | `ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails` | Image repository |
 | `image.tag` | `""` | Image tag; empty resolves to `.Chart.AppVersion` |
 | `image.pullPolicy` | `IfNotPresent` | Pull policy |
 | `imagePullSecrets` | `[]` | Registry credentials |
@@ -567,6 +567,13 @@ release is a single version number applied consistently:
 chart version == appVersion == image tag == upstream Guardrails version
 ```
 
+Artifacts publish under the repository path, so both auto-link to this repo:
+
+```
+image  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
+chart  ghcr.io/ansjindal/nemo-guardrails-helm/charts/nemo-guardrails:<version>
+```
+
 Trigger by pushing a tag:
 
 ```bash
@@ -583,7 +590,7 @@ The run does three things in order:
    layer caching, and pushes `:<version>` and `:latest` to GHCR.
 3. **chart** — lints, packages with `--version`/`--app-version` set to the release
    version, asserts the rendered Deployment references the exact image tag just
-   published, pushes the chart to `oci://ghcr.io/<owner>/charts`, and creates a GitHub
+   published, pushes the chart to `oci://ghcr.io/<owner>/<repo>/charts`, and creates a GitHub
    release with the `.tgz` attached.
 
 Because `image.tag` defaults to empty, the chart resolves its image from `appVersion` —
@@ -592,7 +599,8 @@ the two cannot drift.
 > [!NOTE]
 > GHCR packages are **private** on first publish. After the initial release, set both the
 > image and chart packages to public under the repository's package settings, otherwise
-> `helm install` from the OCI URL will fail with an authorization error.
+> `helm install` from the OCI URL will fail with an authorization error. Repo linking is
+> automatic via `org.opencontainers.image.source`.
 
 ### Targeting a different registry
 
@@ -601,7 +609,6 @@ Override the `env` block at the top of the workflow:
 ```yaml
 env:
   REGISTRY: nvcr.io
-  IMAGE_NAMESPACE: your-org
   IMAGE_NAME: nemo-guardrails
 ```
 

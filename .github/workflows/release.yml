@@ -22,11 +22,15 @@ on:
         default: false
 
 env:
-  # Where the built image is published. There is no official image for the
-  # upstream *library* server, so this repo builds one. Point REGISTRY and
-  # IMAGE_NAMESPACE at an NVIDIA-owned registry instead if you have push rights.
+  # Artifacts publish under <owner>/<repo>/ so they auto-link to this repository
+  # and the origin is obvious from the pull command:
+  #
+  #   image  ghcr.io/<owner>/<repo>/nemo-guardrails:<version>
+  #   chart  ghcr.io/<owner>/<repo>/charts/nemo-guardrails:<version>
+  #
+  # There is no official image for the upstream *library* server, so this repo
+  # builds one. Point REGISTRY at another registry if you have push rights.
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: ""          # defaults to this repo's owner when empty
   IMAGE_NAME: nemo-guardrails
   UPSTREAM_REPO: NVIDIA-NeMo/Guardrails
 
@@ -37,6 +41,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
       image: ${{ steps.v.outputs.image }}
+      chart_repo: ${{ steps.v.outputs.chart_repo }}
     steps:
       - id: v
         run: |
@@ -53,13 +58,13 @@ jobs:
             echo "::error::'$VERSION' is not a valid SemVer version"
             exit 1
           fi
-          NS="${{ env.IMAGE_NAMESPACE }}"
-          [ -n "$NS" ] || NS="${{ github.repository_owner }}"
-          NS="$(printf '%s' "$NS" | tr '[:upper:]' '[:lower:]')"
+          # GHCR paths must be lowercase.
+          REPO_PATH="$(printf '%s' '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           {
             echo "version=$VERSION"
             echo "publish=$PUBLISH"
-            echo "image=${{ env.REGISTRY }}/$NS/${{ env.IMAGE_NAME }}"
+            echo "image=${{ env.REGISTRY }}/$REPO_PATH/${{ env.IMAGE_NAME }}"
+            echo "chart_repo=oci://${{ env.REGISTRY }}/$REPO_PATH/charts"
           } >> "$GITHUB_OUTPUT"
           echo "Version $VERSION | publish=$PUBLISH"
 
@@ -98,8 +103,8 @@ jobs:
           labels: |
             org.opencontainers.image.title=nemo-guardrails
             org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-            org.opencontainers.image.source=https://github.com/${{ env.UPSTREAM_REPO }}
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ env.UPSTREAM_REPO }}
             org.opencontainers.image.description=Unofficial build of the NVIDIA NeMo Guardrails API server, built from upstream source. Not published or supported by NVIDIA.
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.vendor=Unofficial community build
@@ -147,9 +152,8 @@ jobs:
         if: needs.resolve.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           helm push "nemo-guardrails-${{ needs.resolve.outputs.version }}.tgz" \
-            "oci://${{ env.REGISTRY }}/$OWNER/charts"
+            "${{ needs.resolve.outputs.chart_repo }}"
 
       - name: Create GitHub release
         if: needs.resolve.outputs.publish == 'true'
@@ -170,7 +174,7 @@ jobs:
             **Install**
             ```bash
             helm install guardrails \
-              oci://ghcr.io/${{ github.repository_owner }}/charts/nemo-guardrails \
+              ${{ needs.resolve.outputs.chart_repo }}/nemo-guardrails \
               --version ${{ needs.resolve.outputs.version }} \
               --namespace guardrails --create-namespace
             ```
