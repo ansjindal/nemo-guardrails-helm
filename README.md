@@ -3,7 +3,7 @@
 [![lint](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/lint.yml)
 [![release](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml/badge.svg)](https://github.com/ansjindal/nemo-guardrails-helm/actions/workflows/release.yml)
 [![chart](https://img.shields.io/github/v/release/ansjindal/nemo-guardrails-helm?label=chart&sort=semver&color=0f1689&logo=helm&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fcharts%2Fnemo-guardrails)
-[![image](https://img.shields.io/github/v/release/ansjindal/nemo-guardrails-helm?label=image&sort=semver&color=2496ed&logo=docker&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fnemo-guardrails)
+[![image](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fansjindal%2Fnemo-guardrails-helm%2Fmain%2FChart.yaml&query=%24.appVersion&label=image&color=2496ed&logo=docker&logoColor=white)](https://github.com/ansjindal/nemo-guardrails-helm/pkgs/container/nemo-guardrails-helm%2Fnemo-guardrails)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![unofficial](https://img.shields.io/badge/NVIDIA-unofficial-orange.svg)](#container-image)
 
@@ -61,11 +61,17 @@ managed declaratively instead of being baked into an image.
 This repository builds and publishes the image itself:
 
 ```
-ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
+ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<guardrails-version>
 ```
 
-The tag always matches the upstream NeMo Guardrails version and the chart version, so
-`helm install --version 0.24.1` and image tag `0.24.1` always correspond.
+The image tag always matches the upstream NeMo Guardrails version, which is the chart's
+`appVersion`. The chart has its own version, so `helm show chart ... --version <chart>`
+tells you which Guardrails release (and image tag) a chart deploys:
+
+| Chart | `appVersion` / image tag |
+|---|---|
+| `1.0.0` | `0.24.1` |
+| `0.24.1` | `0.24.1` (chart versions up to here followed the upstream version) |
 
 > [!IMPORTANT]
 > **This is an unofficial build.** NVIDIA does not publish a container image for the
@@ -107,7 +113,7 @@ From the published chart:
 
 ```bash
 helm install guardrails \
-  oci://ghcr.io/ansjindal/nemo-guardrails-helm/charts/nemo-guardrails --version 0.24.1 \
+  oci://ghcr.io/ansjindal/nemo-guardrails-helm/charts/nemo-guardrails --version 1.0.0 \
   --namespace guardrails --create-namespace \
   --set modelApiKeys.OPENAI_API_KEY=sk-... \
   --wait
@@ -581,40 +587,48 @@ via `existingSecret` is left in place.
 
 ## Releasing
 
-`.github/workflows/release.yml` builds the image and publishes the chart in one run, so a
-release is a single version number applied consistently:
+`.github/workflows/release.yml` builds the image and publishes the chart in one run.
+`Chart.yaml` holds both versions:
 
 ```
-chart version == appVersion == image tag == upstream Guardrails version
+version     the chart's own SemVer — bump it for any chart change
+appVersion  upstream Guardrails version == image tag
 ```
 
 Artifacts publish under the repository path, so both auto-link to this repo:
 
 ```
-image  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
+image  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<appVersion>
 chart  ghcr.io/ansjindal/nemo-guardrails-helm/charts/nemo-guardrails:<version>
 ```
 
-Trigger by pushing a tag:
+To release, bump `version` in `Chart.yaml` (and `appVersion` when moving to a new
+upstream release), merge, then push the matching tag:
 
 ```bash
-git tag v0.24.1 && git push origin v0.24.1
+git tag v1.0.0 && git push origin v1.0.0
 ```
 
-Or run **Actions → release → Run workflow**, supplying the upstream version. Leave
-`publish` unchecked for a dry run that builds and packages without pushing anything.
+The run fails if the tag does not match `Chart.yaml`, or if that chart version is already
+published — a published chart version is never overwritten. The image tag is rebuilt on
+every release, which picks up base-image security fixes; pin the image by digest if you
+need it immutable.
+
+Or run **Actions → release → Run workflow**, which releases the versions in `Chart.yaml`
+on the selected branch. Leave `publish` unchecked for a dry run that builds, scans, and
+tests without pushing anything.
 
 The run does three things in order:
 
-1. **resolve** — derives the version, validates it as SemVer.
-2. **image** — checks out `NVIDIA-NeMo/Guardrails` at `v<version>` and builds the image
+1. **resolve** — reads both versions from `Chart.yaml`, validates them as SemVer, and
+   checks the tag and that the chart version is unpublished.
+2. **image** — checks out `NVIDIA-NeMo/Guardrails` at `v<appVersion>` and builds the image
    with layer caching into the local Docker daemon. It then scans the image with Trivy
    (report, SBOM, code scanning upload), installs the chart into a kind cluster with that
    exact image and runs `helm test`, and enforces the vulnerability policy. Only then does
-   it push `:<version>` and `:latest` to GHCR — the pushed image is the one that was
+   it push `:<appVersion>` and `:latest` to GHCR — the pushed image is the one that was
    scanned and tested, not a rebuild.
-3. **chart** — lints, scans the chart for misconfigurations, packages with
-   `--version`/`--app-version` set to the release version, asserts the rendered
+3. **chart** — lints, scans the chart for misconfigurations, packages it, asserts the rendered
    Deployment references the exact image tag just published, pushes the chart to
    `oci://ghcr.io/<owner>/<repo>/charts`, and creates a GitHub release with the `.tgz`,
    the CycloneDX SBOM, and the full Trivy report attached.
@@ -670,7 +684,7 @@ trivy config --ignorefile .trivyignore.yaml --severity HIGH,CRITICAL .
 # Image — the gate as CI runs it
 trivy image --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL \
   --ignorefile .trivyignore.yaml \
-  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
+  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<guardrails-version>
 ```
 
 > [!IMPORTANT]
