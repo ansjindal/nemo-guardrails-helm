@@ -1,19 +1,21 @@
 name: security-scan
 
-# Re-scans the images the latest chart release deploys. CVEs keep being
-# disclosed after release, so a clean scan at build time does not stay clean.
-# Findings land in Security → Code scanning; the run fails when a fixable
-# HIGH/CRITICAL vulnerability appears that .trivyignore.yaml does not cover.
+# Scans the container images the chart deploys for CVEs with Trivy, and uploads
+# HIGH/CRITICAL findings to Security → Code scanning.
+#
+# - Daily, on demand, and after each release: the images the latest published
+#   release deploys. CVEs keep being disclosed after release, so a clean scan
+#   at build time does not stay clean. Fails on a fixable HIGH/CRITICAL
+#   vulnerability that .trivyignore.yaml does not cover.
+# - Pull requests: the images the PR's chart deploys. Uploading the same
+#   categories as main lets code scanning compare the two, so its "Trivy" check
+#   fails only on vulnerabilities the PR introduces, not on pre-existing ones.
 
 on:
   schedule:
     - cron: "23 5 * * *"
   workflow_dispatch:
-  # Proves a change to the accepted findings against the published images.
   pull_request:
-    paths:
-      - .trivyignore.yaml
-      - .github/workflows/security-scan.yml
 
 permissions:
   contents: read
@@ -24,22 +26,35 @@ jobs:
     outputs:
       images: ${{ steps.images.outputs.images }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.3
 
-      # Renders the chart as published at the latest release, not the working
-      # tree: main can already reference newer images than users have deployed.
+      # The category drops the tag, so each image keeps a single code scanning
+      # configuration across releases instead of leaving a stale one per tag.
       - id: images
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          CHART_VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName | ltrimstr("v")')"
-          REPO_PATH="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          IMAGES="$(helm template scan "oci://ghcr.io/$REPO_PATH/charts/nemo-guardrails" --version "$CHART_VERSION" \
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RENDERED="$(helm template scan .)"
+          else
+            # The published chart, not the working tree: main can already
+            # reference newer images than the latest release deploys.
+            CHART_VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName | ltrimstr("v")')"
+            REPO_PATH="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            RENDERED="$(helm template scan "oci://ghcr.io/$REPO_PATH/charts/nemo-guardrails" --version "$CHART_VERSION")"
+          fi
+          IMAGES="$(printf '%s\n' "$RENDERED" \
             | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' \
-            | sort -u | jq -Rcn '[inputs]')"
+            | sort -u \
+            | jq -Rcn '[inputs | {image: ., category: ("image:" + (sub("@.*$"; "") | sub(":[^:/]+$"; "")))}]')"
           echo "Scanning: $IMAGES"
           echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
 
@@ -52,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJSON(needs.resolve.outputs.images) }}
+        include: ${{ fromJSON(needs.resolve.outputs.images) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,9 +93,13 @@ jobs:
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy.sarif
-          category: image:${{ matrix.image }}
+          category: ${{ matrix.category }}
 
+      # On pull requests, code scanning's own check decides: it fails only on
+      # alerts the PR introduces, so a CVE newly disclosed in an unchanged
+      # image does not block unrelated PRs.
       - name: Enforce the vulnerability policy
+        if: github.event_name != 'pull_request'
         env:
           IMAGE: ${{ matrix.image }}
         run: |

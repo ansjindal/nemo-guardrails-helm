@@ -663,12 +663,13 @@ Non-GHCR registries also need their own login step and credentials in repository
 |---|---|---|---|
 | `lint-and-template` | every PR and push to `main` | Chart misconfigurations (`trivy config`); install into kind + `helm test` | HIGH/CRITICAL misconfiguration; failed install or test |
 | `release` | every release, before anything is pushed | Image CVEs (OS and Python packages), SBOM; chart misconfigurations; kind install + `helm test` with the new image | Fixable HIGH/CRITICAL CVE; HIGH/CRITICAL misconfiguration; failed install or test |
-| `security-scan` | daily, and on demand | CVEs in every image the latest release deploys (server and `helm test` images) | Fixable HIGH/CRITICAL CVE |
+| `security-scan` | daily, on demand, and after each release | CVEs in every image the latest release deploys (server and `helm test` images) | Fixable HIGH/CRITICAL CVE |
+| `security-scan` | every PR | CVEs in every image the PR's chart deploys | The code scanning *Trivy* check, on vulnerabilities the PR introduces |
 
 - **Where findings appear:** the *trivy scan* badge at the top shows whether the published
-  images currently pass the gate. Details go to Security → Code scanning, categorised by
-  `image`, `image:<ref>`, and `chart-misconfig`; GitHub shows that tab only to users with
-  write access. Image uploads are limited to HIGH/CRITICAL to keep the tab actionable.
+  images currently pass the gate. Details go to Security → Code scanning, with one
+  category per image (`image:<name>`, no tag, so it carries over between releases) plus
+  `chart-misconfig`; GitHub shows that tab only to users with write access. Image uploads are limited to HIGH/CRITICAL to keep the tab actionable.
   Everyone can download the full Trivy report and a CycloneDX SBOM from each release.
 - **Why "fixable" only:** most Debian findings in the image have no fixed package yet
   (many are `linux-libc-dev` kernel headers that the upstream Dockerfile's build toolchain
