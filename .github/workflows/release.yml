@@ -1,9 +1,14 @@
 name: release
 
-# Builds the NeMo Guardrails server image from upstream source, publishes it to
-# GHCR, then packages and publishes the Helm chart at the same version.
+# Builds the NeMo Guardrails server image from upstream source, scans and tests
+# it, publishes it to GHCR, then packages and publishes the Helm chart at the
+# same version.
 #
 #   Chart version == appVersion == image tag == upstream Guardrails version.
+#
+# Nothing is pushed unless the image passes the vulnerability gate and the chart
+# installs and passes `helm test` with that exact image. The pushed image is the
+# one that was scanned and tested, not a rebuild.
 #
 # Trigger by pushing a tag (v0.24.1), or manually via workflow_dispatch.
 
@@ -20,6 +25,9 @@ on:
         description: "Publish image and chart. Unchecked performs a dry run."
         type: boolean
         default: false
+
+permissions:
+  contents: read
 
 env:
   # Artifacts publish under <owner>/<repo>/ so they auto-link to this repository
@@ -44,14 +52,19 @@ jobs:
       chart_repo: ${{ steps.v.outputs.chart_repo }}
     steps:
       - id: v
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.guardrails_version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
             PUBLISH=true
           else
-            VERSION="${{ inputs.guardrails_version }}"
-            PUBLISH="${{ inputs.publish }}"
+            VERSION="$INPUT_VERSION"
+            PUBLISH="$INPUT_PUBLISH"
           fi
           # Chart.yaml requires SemVer 2.
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
@@ -59,12 +72,12 @@ jobs:
             exit 1
           fi
           # GHCR paths must be lowercase.
-          REPO_PATH="$(printf '%s' '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          REPO_PATH="$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           {
             echo "version=$VERSION"
             echo "publish=$PUBLISH"
-            echo "image=${{ env.REGISTRY }}/$REPO_PATH/${{ env.IMAGE_NAME }}"
-            echo "chart_repo=oci://${{ env.REGISTRY }}/$REPO_PATH/charts"
+            echo "image=$REGISTRY/$REPO_PATH/$IMAGE_NAME"
+            echo "chart_repo=oci://$REGISTRY/$REPO_PATH/charts"
           } >> "$GITHUB_OUTPUT"
           echo "Version $VERSION | publish=$PUBLISH"
 
@@ -74,29 +87,33 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      IMAGE: ${{ needs.resolve.outputs.image }}
     steps:
       - name: Check out upstream NeMo Guardrails
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.UPSTREAM_REPO }}
           ref: v${{ needs.resolve.outputs.version }}
+          path: upstream
+          persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: needs.resolve.outputs.publish == 'true'
-        uses: docker/login-action@v3
+      - name: Check out the chart
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          path: chart
+          persist-credentials: false
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build into the local Docker daemon
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: upstream
           platforms: linux/amd64
-          push: ${{ needs.resolve.outputs.publish == 'true' }}
+          load: true
           tags: |
             ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
             ${{ needs.resolve.outputs.image }}:latest
@@ -111,57 +128,165 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0 # see "Security scanning" in the README before bumping
+          cache: true
+
+      # One full scan feeds every report; the gate further down re-reads the
+      # layer cache, so it is cheap.
+      - name: Scan for vulnerabilities and generate an SBOM
+        run: |
+          set -euo pipefail
+          trivy image --scanners vuln --timeout 20m \
+            --format json --output trivy-image.json "$IMAGE:$VERSION"
+          trivy convert --format sarif --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json
+          trivy convert --format cyclonedx --output sbom.cdx.json trivy-image.json
+          trivy convert --format table --severity HIGH,CRITICAL trivy-image.json
+
+      - name: Upload to GitHub code scanning
+        if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-image.sarif
+          category: image
+
+      - name: Keep the scan report and SBOM
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-reports
+          path: |
+            trivy-image.json
+            sbom.cdx.json
+          if-no-files-found: ignore
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+
+      - name: Install the chart with this image and run helm test (restricted PSS)
+        working-directory: chart
+        run: |
+          set -euo pipefail
+          kind load docker-image "$IMAGE:$VERSION" --name chart-testing
+          kubectl create namespace guardrails
+          kubectl label namespace guardrails pod-security.kubernetes.io/enforce=restricted
+          helm install ci . \
+            --namespace guardrails \
+            --set image.repository="$IMAGE" \
+            --set image.tag="$VERSION" \
+            --set image.pullPolicy=Never \
+            --wait --timeout 10m
+          helm test ci --namespace guardrails
+
+      - name: Dump diagnostics
+        if: ${{ failure() }}
+        run: |
+          kubectl get all -n guardrails -o wide || true
+          kubectl describe pods -n guardrails || true
+          kubectl logs -n guardrails -l app.kubernetes.io/instance=ci --all-containers --tail=200 || true
+
+      - name: Enforce the vulnerability policy
+        run: |
+          trivy image --scanners vuln --timeout 20m --skip-db-update \
+            --ignore-unfixed --severity HIGH,CRITICAL \
+            --ignorefile chart/.trivyignore.yaml \
+            --exit-code 1 "$IMAGE:$VERSION"
+
+      - name: Log in to GHCR
+        if: needs.resolve.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the tested image
+        if: needs.resolve.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+
   chart:
     needs: [resolve, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      IMAGE: ${{ needs.resolve.outputs.image }}
+      CHART_REPO: ${{ needs.resolve.outputs.chart_repo }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.3
+
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0 # see "Security scanning" in the README before bumping
+          cache: true
 
       - name: Lint
         run: helm lint .
 
+      - name: Scan the chart for misconfigurations
+        run: |
+          trivy config . \
+            --ignorefile .trivyignore.yaml \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
       - name: Package at the release version
         run: |
           set -euo pipefail
-          helm package . \
-            --version "${{ needs.resolve.outputs.version }}" \
-            --app-version "${{ needs.resolve.outputs.version }}"
+          helm package . --version "$VERSION" --app-version "$VERSION"
           ls -l ./*.tgz
 
       - name: Verify the packaged chart points at the published image
         run: |
           set -euo pipefail
-          helm template verify ./nemo-guardrails-${{ needs.resolve.outputs.version }}.tgz \
-            | grep -q "image: \"${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}\""
+          helm template verify "./nemo-guardrails-$VERSION.tgz" \
+            | grep -q "image: \"$IMAGE:$VERSION\""
           echo "Image reference verified."
+
+      - name: Fetch the image scan report and SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-reports
+          path: security-reports
 
       - name: Log in to GHCR
         if: needs.resolve.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" \
-            | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          printf '%s' "$GITHUB_TOKEN" \
+            | helm registry login "$REGISTRY" -u "$ACTOR" --password-stdin
 
       - name: Push chart to GHCR (OCI)
         if: needs.resolve.outputs.publish == 'true'
-        run: |
-          set -euo pipefail
-          helm push "nemo-guardrails-${{ needs.resolve.outputs.version }}.tgz" \
-            "${{ needs.resolve.outputs.chart_repo }}"
+        run: helm push "nemo-guardrails-$VERSION.tgz" "$CHART_REPO"
 
       - name: Create GitHub release
         if: needs.resolve.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ needs.resolve.outputs.version }}
           name: v${{ needs.resolve.outputs.version }}
-          files: nemo-guardrails-${{ needs.resolve.outputs.version }}.tgz
+          files: |
+            nemo-guardrails-${{ needs.resolve.outputs.version }}.tgz
+            security-reports/sbom.cdx.json
+            security-reports/trivy-image.json
           generate_release_notes: true
           body: |
             Chart `${{ needs.resolve.outputs.version }}` for NeMo Guardrails `${{ needs.resolve.outputs.version }}`.
@@ -178,3 +303,8 @@ jobs:
               --version ${{ needs.resolve.outputs.version }} \
               --namespace guardrails --create-namespace
             ```
+
+            **Security**
+            `sbom.cdx.json` is the CycloneDX SBOM of the image and
+            `trivy-image.json` the full Trivy report at build time. Current
+            findings are under the repository's Security → Code scanning tab.

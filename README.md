@@ -32,6 +32,7 @@ managed declaratively instead of being baked into an image.
 - [Troubleshooting](#troubleshooting)
 - [Uninstalling](#uninstalling)
 - [Releasing](#releasing)
+- [Security scanning](#security-scanning)
 
 ---
 
@@ -134,6 +135,11 @@ curl http://localhost:8000/v1/rails/configs
 The server discovers configurations as **subdirectories** of its config path, where each
 directory name is the `config_id`. This chart models that directly: every key under
 `guardrailsConfigs` becomes one ConfigMap, mounted at `/config/<key>/`.
+
+Only these configurations are served. The upstream image also bakes example bots into
+`/config` (`abc`, `hello_world`, …); the chart masks that directory with an empty volume,
+because those examples would otherwise be reachable by `config_id` and would call their
+own model endpoints with this pod's provider keys.
 
 ```yaml
 guardrailsConfigs:
@@ -493,21 +499,28 @@ connection open for the duration of the generation.
 |---|---|---|
 | `probes.startup.failureThreshold` | `30` | Allows ~5 min for first boot |
 | `probes.liveness.*`, `probes.readiness.*` | see `values.yaml` | Probe tuning |
-| `podSecurityContext` | `{}` | Pod-level security context |
-| `securityContext` | drops all caps | Container-level security context |
+| `podSecurityContext` | non-root UID `10001`, `RuntimeDefault` seccomp | Pod-level security context |
+| `securityContext` | read-only root FS, no privilege escalation, drops all caps | Container-level security context |
+| `scratch.mountPath` / `scratch.sizeLimit` | `/scratch` / `256Mi` | Writable emptyDir used as `HOME`, `TMPDIR`, and the Chainlit working directory |
+| `embeddingModelCache` | `/tmp/fastembed_cache` | Where the image keeps its pre-downloaded embedding model |
 
-> [!WARNING]
-> The upstream image installs its Python environment and embedding-model cache as root,
-> so `runAsNonRoot` is **not** enabled by default. Rebuild the image with a dedicated UID
-> before hardening this further.
+The pod meets the Kubernetes *restricted* Pod Security Standard. The upstream image is
+built as root, but its files are world-readable, so it runs unchanged as an arbitrary UID;
+the only writes (Chainlit's working files, temp files) go to the `scratch` volume. If you
+mount extra volumes the server must write to, give them an `emptyDir` or a writable PVC —
+the root filesystem stays read-only.
 
 ## Verifying a deployment
 
 `helm test` runs a pod that checks liveness and config discovery:
 
 ```bash
-helm test <release> -n <namespace> --logs
+helm test <release> -n <namespace>
 ```
+
+The test pod is deleted when it passes, so `--logs` cannot fetch its output and exits
+non-zero; on failure the pod is kept, and `kubectl logs <release>-nemo-guardrails-test-connection`
+shows why.
 
 Manual end-to-end check:
 
@@ -548,6 +561,7 @@ Set `server.autoReload=true` to have the server pick up file changes in place in
 | Requests return 401/403 from the provider | Missing or wrong key; confirm the variable name matches the engine |
 | Startup probe failing | First boot loads the embedding model; raise `probes.startup.failureThreshold` |
 | 422 on `tools` requests | The server only accepts `tools` for non-streaming requests on a config with `passthrough: true` |
+| `Read-only file system` in the logs | Something writes outside `/scratch`; point it there with `extraEnv`, or mount a writable volume at that path |
 
 Inspect what the server actually loaded:
 
@@ -593,12 +607,17 @@ Or run **Actions → release → Run workflow**, supplying the upstream version.
 The run does three things in order:
 
 1. **resolve** — derives the version, validates it as SemVer.
-2. **image** — checks out `NVIDIA-NeMo/Guardrails` at `v<version>`, builds the image with
-   layer caching, and pushes `:<version>` and `:latest` to GHCR.
-3. **chart** — lints, packages with `--version`/`--app-version` set to the release
-   version, asserts the rendered Deployment references the exact image tag just
-   published, pushes the chart to `oci://ghcr.io/<owner>/<repo>/charts`, and creates a GitHub
-   release with the `.tgz` attached.
+2. **image** — checks out `NVIDIA-NeMo/Guardrails` at `v<version>` and builds the image
+   with layer caching into the local Docker daemon. It then scans the image with Trivy
+   (report, SBOM, code scanning upload), installs the chart into a kind cluster with that
+   exact image and runs `helm test`, and enforces the vulnerability policy. Only then does
+   it push `:<version>` and `:latest` to GHCR — the pushed image is the one that was
+   scanned and tested, not a rebuild.
+3. **chart** — lints, scans the chart for misconfigurations, packages with
+   `--version`/`--app-version` set to the release version, asserts the rendered
+   Deployment references the exact image tag just published, pushes the chart to
+   `oci://ghcr.io/<owner>/<repo>/charts`, and creates a GitHub release with the `.tgz`,
+   the CycloneDX SBOM, and the full Trivy report attached.
 
 Because `image.tag` defaults to empty, the chart resolves its image from `appVersion` —
 the two cannot drift.
@@ -620,6 +639,47 @@ env:
 ```
 
 Non-GHCR registries also need their own login step and credentials in repository secrets.
+
+## Security scanning
+
+[Trivy](https://github.com/aquasecurity/trivy) checks both artifacts, at three points:
+
+| Workflow | When | What | Fails on |
+|---|---|---|---|
+| `lint-and-template` | every PR and push to `main` | Chart misconfigurations (`trivy config`); install into kind + `helm test` | HIGH/CRITICAL misconfiguration; failed install or test |
+| `release` | every release, before anything is pushed | Image CVEs (OS and Python packages), SBOM; chart misconfigurations; kind install + `helm test` with the new image | Fixable HIGH/CRITICAL CVE; HIGH/CRITICAL misconfiguration; failed install or test |
+| `security-scan` | daily, and on demand | CVEs in every image the latest release deploys (server and `helm test` images) | Fixable HIGH/CRITICAL CVE |
+
+- **Where findings appear:** Security → Code scanning, categorised by `image`,
+  `image:<ref>`, and `chart-misconfig`. Image uploads are limited to HIGH/CRITICAL to keep
+  the tab actionable; the full report and a CycloneDX SBOM are attached to every release.
+- **Why "fixable" only:** most Debian findings in the image have no fixed package yet
+  (many are `linux-libc-dev` kernel headers that the upstream Dockerfile's build toolchain
+  leaves in the runtime image and that a container never uses). Gating on them would
+  block every release without offering a remedy; they stay visible in the report.
+- **Accepting a finding:** add it to [`.trivyignore.yaml`](.trivyignore.yaml) with a
+  `statement` explaining why and an `expired_at` date. Only the gates read that file;
+  reports still show the finding, and it fails the gate again once it expires.
+
+Run the same checks locally:
+
+```bash
+# Chart
+trivy config --ignorefile .trivyignore.yaml --severity HIGH,CRITICAL .
+
+# Image — the gate as CI runs it
+trivy image --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL \
+  --ignorefile .trivyignore.yaml \
+  ghcr.io/ansjindal/nemo-guardrails-helm/nemo-guardrails:<version>
+```
+
+> [!IMPORTANT]
+> Trivy's own distribution was
+> [compromised in March 2026](https://github.com/advisories/GHSA-69fq-xp46-6x23) through
+> mutable tags. Every action in these workflows is pinned to a full commit SHA, and the
+> Trivy binary to an explicit version (`v0.74.0`). Dependabot proposes SHA bumps weekly;
+> bump the Trivy version deliberately, after checking the release against Aqua's
+> advisories, in all four places it appears.
 
 ## License
 

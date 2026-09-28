@@ -113,15 +113,33 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: ""
 
-## The upstream image installs its Python environment and embedding-model cache
-## as root. Running as a different UID requires rebuilding the image, so the
-## defaults below stay permissive; harden them if your image supports it.
-podSecurityContext: {}
+## Runs as an unprivileged UID with a read-only root filesystem. The upstream
+## image is built as root, but its files are world-readable, so an arbitrary
+## UID works: everything the server writes goes to the `scratch` volume below.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
 securityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
+
+## Writable emptyDir for a read-only root filesystem. HOME, TMPDIR, and the
+## Chainlit working directory (created at import even with the chat UI off)
+## all point here.
+scratch:
+  mountPath: /scratch
+  sizeLimit: 256Mi
+
+## Location of the embedding model the image pre-downloads at build time. The
+## upstream Dockerfile puts it under the build-time temp dir; it is read in
+## place because TMPDIR is redirected to the scratch volume at runtime.
+embeddingModelCache: /tmp/fastembed_cache
 
 ## Probes target /v1/health, the same endpoint used by the image HEALTHCHECK.
 ## startupProbe absorbs the model/embedding load on first boot.

@@ -1,0 +1,93 @@
+name: security-scan
+
+# Re-scans the images the latest chart release deploys. CVEs keep being
+# disclosed after release, so a clean scan at build time does not stay clean.
+# Findings land in Security → Code scanning; the run fails when a fixable
+# HIGH/CRITICAL vulnerability appears that .trivyignore.yaml does not cover.
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+  # Proves a change to the accepted findings against the published images.
+  pull_request:
+    paths:
+      - .trivyignore.yaml
+      - .github/workflows/security-scan.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.images.outputs.images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      # Chart.yaml is not bumped on release, so ask GitHub which version is
+      # published and render the chart at that tag, test hook included.
+      - id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName | ltrimstr("v")')"
+          IMAGES="$(helm template scan . --set image.tag="$VERSION" \
+            | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' \
+            | sort -u | jq -Rcn '[inputs]')"
+          echo "Scanning: $IMAGES"
+          echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
+
+  scan:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.resolve.outputs.images) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0 # see "Security scanning" in the README before bumping
+          cache: true
+
+      - name: Scan
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          trivy image --scanners vuln --timeout 20m \
+            --format json --output trivy.json "$IMAGE"
+          trivy convert --format sarif --severity HIGH,CRITICAL --output trivy.sarif trivy.json
+          trivy convert --format table --severity HIGH,CRITICAL trivy.json
+
+      - name: Upload to GitHub code scanning
+        if: ${{ !cancelled() && hashFiles('trivy.sarif') != '' && github.event.pull_request.head.repo.fork != true }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy.sarif
+          category: image:${{ matrix.image }}
+
+      - name: Enforce the vulnerability policy
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          trivy image --scanners vuln --timeout 20m --skip-db-update \
+            --ignore-unfixed --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore.yaml \
+            --exit-code 1 "$IMAGE"
