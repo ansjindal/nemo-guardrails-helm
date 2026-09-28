@@ -110,7 +110,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write
     env:
       APP_VERSION: ${{ needs.resolve.outputs.app_version }}
       IMAGE: ${{ needs.resolve.outputs.image }}
@@ -156,23 +155,16 @@ jobs:
           version: v0.74.0 # see "Security scanning" in the README before bumping
           cache: true
 
-      # One full scan feeds every report; the gate further down re-reads the
-      # layer cache, so it is cheap.
+      # One full scan feeds the report and SBOM; the gate further down re-reads
+      # the layer cache, so it is cheap. Code scanning is fed by security-scan,
+      # which this workflow triggers once the release is published.
       - name: Scan for vulnerabilities and generate an SBOM
         run: |
           set -euo pipefail
           trivy image --scanners vuln --timeout 20m \
             --format json --output trivy-image.json "$IMAGE:$APP_VERSION"
-          trivy convert --format sarif --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json
           trivy convert --format cyclonedx --output sbom.cdx.json trivy-image.json
           trivy convert --format table --severity HIGH,CRITICAL trivy-image.json
-
-      - name: Upload to GitHub code scanning
-        if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: trivy-image.sarif
-          category: image
 
       - name: Keep the scan report and SBOM
         if: ${{ !cancelled() }}
@@ -239,6 +231,7 @@ jobs:
     needs: [resolve, image]
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       packages: write
     env:
@@ -335,3 +328,12 @@ jobs:
             `sbom.cdx.json` is the CycloneDX SBOM of the image and
             `trivy-image.json` the full Trivy report at build time. Current
             findings are under the repository's Security → Code scanning tab.
+
+      # Refreshes code scanning with the images this release deploys instead of
+      # waiting for the daily run.
+      - name: Scan the published images
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run security-scan.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
