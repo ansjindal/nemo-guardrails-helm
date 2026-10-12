@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload to GitHub code scanning
         if: ${{ !cancelled() && hashFiles('trivy-chart.sarif') != '' && github.event.pull_request.head.repo.fork != true }}
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy-chart.sarif
           category: chart-misconfig
@@ -93,7 +93,7 @@ jobs:
         with:
           version: v3.16.3
 
-      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
 
       - name: Install the chart under the restricted Pod Security Standard
         run: |
